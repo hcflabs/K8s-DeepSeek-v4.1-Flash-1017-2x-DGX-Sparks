@@ -1,0 +1,29 @@
+{{- range $c := list (dict "name" "leader" "rank" 0) (dict "name" "worker" "rank" 1) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dsv41.fullname" $ }}-{{ $c.name }}
+  labels:
+    {{- include "dsv41.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $c.name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "dsv41.selectorLabels" (dict "root" $ "component" $c.name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dsv41.labels" $ | nindent 8 }}
+        {{- include "dsv41.selectorLabels" (dict "root" $ "component" $c.name) | nindent 8 }}
+      annotations:
+        checksum/scripts: {{ include (print $.Template.BasePath "/configmaps.yaml") $ | sha256sum }}
+        {{- with $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "dsv41.podSpec" (dict "root" $ "rank" $c.rank "component" $c.name) | nindent 6 }}
+---
+{{ end }}

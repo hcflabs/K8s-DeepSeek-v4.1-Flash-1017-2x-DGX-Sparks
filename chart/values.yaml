@@ -1,0 +1,157 @@
+# DeepSeek-V4.1-Flash-1017 on two DGX Sparks with TensorFold. Names mirror the
+# upstream recipe's settings (scripts/config.sh at the commit in SYNC.md); ENVS.md
+# maps every one. Ansible inventory vars: gpu_fabric_interface <->
+# topology.fabric.interface, gpu_fabric_rdma_device <-> topology.fabric.rdmaDevice.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # Built from zig/ by scripts/build-image.sh (or the image workflow): upstream
+  # publishes none. The tag is scripts/image-tag.sh's (CI checks it matches).
+  repository: ghcr.io/hcflabs/dsv41-flash-1017-tensorfold
+  tag: "exl3-tp2-7d71dcdf7f2f"
+  digest: ""            # optional immutable pin, e.g. "sha256:..."
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+model:
+  servedName: DeepSeek-V4.1-Flash-1017
+
+weights:
+  # REQUIRED. The root scripts/prepare-model.sh fills on each node (checkpoint/,
+  # engram/, kit/); the prepare init container adds data/ (~106 GB weight file).
+  # A full local copy on each node: ~505 GB.
+  hostPath:
+    leader: ""
+    worker: ""
+
+prepare:
+  # Init container: RoPE tables, image bias, token map, the rank's weight file and
+  # the served folder, from the checkpoint (CPU, no network). Skips what is done.
+  enabled: true
+  verifyKit: true       # sha256 every kit file against its MANIFEST
+  minFreeGiB: 130       # disk floor before writing the weight file
+  resources: {}
+
+topology:
+  rankLabels:
+    key: node.tensorfold/rank
+    leader: leader
+    worker: worker
+  gpuToleration:
+    key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  fabric:
+    # REQUIRED - hardware/network specific, no defaults.
+    masterAddr: ""     # leader's address on the point-to-point link (rendezvous, TF_TP_MASTER)
+    workerAddr: ""     # worker's address on the link (informational; NOTES and checks)
+    interface: ""      # NCCL_SOCKET_IFNAME: the link's netdev (ip -br link)
+    rdmaDevice: ""     # NCCL_IB_HCA and the engine's RoCE devices (TF_RDMA_DEVICES / --rdma).
+                       # Both PCIe twins of the port, comma-separated, when both carry an
+                       # address (a chunk's all-gather ~1.8x faster). A wrong value falls
+                       # back to TCP silently.
+    gidIndex: ""       # REQUIRED: the RoCE v2 IPv4 GID of those devices (NCCL_IB_GID_INDEX,
+                       # TF_RDMA_GID_INDEX); upstream finds it, here it is given
+    port: 29620        # the ranks' rendezvous port (MASTER_PORT)
+    connectSeconds: 1800   # TF_DS_CONNECT_S: how long rank 1 retries its connect (upstream 300;
+                           # longer here because each pod's init container runs on its own clock)
+
+serving:
+  context: 1048576       # CONTEXT: positions one request may use (the model's window at most)
+  pool: ""               # POOL: shared positions when more than context (empty: context)
+  parallelRequests: 4    # PARALLEL: requests at once (1-16; the family was measured at 4)
+  maxTokens: 32768       # MAX_TOKENS: a reply's budget when a request sets none
+  thinking: true         # THINKING
+  reasoningEffort: ""    # REASONING_EFFORT: low | medium | high | xhigh | "" (template default)
+  thinkingBudget: ""     # THINKING_BUDGET: reasoning tokens before the engine closes the block
+  temperature: "1.0"     # TEMPERATURE / TOP_P / TOP_K: the family's measured sampling
+  topP: "0.95"
+  topK: 20
+  drafts: true           # DRAFTS: the checkpoint's DSpark draft blocks (exact)
+  roundRows: ""          # ROUND_ROWS: empty or 16 (the pinned kit has no wider kernels)
+  prefillInterleaveMs: 250   # PREFILL_INTERLEAVE_MS (0-5000; 0: a long prompt runs to its end first)
+  extraArgs: ""          # appended to rank 0's tensorfold-native serve (rank 0 only)
+  # Extra env on both ranks (TENSORFOLD_*, TF_DS_*, TF_FILL_*, NCCL_* ...), as a list.
+  extraEnv: []
+
+engine:
+  rdma: true             # RDMA: decode-size exchanges over RoCE instead of NCCL
+  rdmaIdleS: 2           # RDMA_IDLE_S (zig/patches/0010)
+  rdmaNapUs: 500         # RDMA_NAP_US
+  graphs: true           # GRAPHS: CUDA graphs
+  graphCap: 128          # GRAPH_CAP (zig/patches/0033)
+  side: true             # SIDE: the mixes' side stream
+  prefetch: true         # PREFETCH: the paced L2 prefetch
+  engramAio: true        # ENGRAM_AIO: Engram reads by Linux AIO
+  replayFloor: true      # REPLAY_FLOOR
+  rank1Profile: 0        # RANK1_PROFILE: 0 | 1 | 2 (attribution only)
+  # Env on both ranks, as a map (null drops a key). The recipe sets none by default.
+  env: {}
+
+nccl:
+  debug: ""              # NCCL_DEBUG (e.g. INFO: confirm NET/IB, not NET/Socket)
+  debugSubsys: ""        # NCCL_DEBUG_SUBSYS
+
+memory:
+  # Upstream's guards: a Spark that runs out of unified memory freezes.
+  minAvailGiB: 112       # MIN_AVAIL_GIB: refuse to start below it (0: off)
+  minAvailWaitS: 120     # MIN_AVAIL_WAIT_S
+  guardGiB: "2.5"        # MEMGUARD_GIB: kill the engine below it (0: off)
+  guardHoldS: "4"        # MEMGUARD_HOLD_S
+  guardHardGiB: "1"      # MEMGUARD_HARD_GIB
+  leaderWatchSeconds: 60 # rank 1 ends when rank 0's /health is gone this long (0: off)
+
+auth:
+  # /v1 needs a bearer token when one is set (/health stays open). Keys are
+  # space-separated in the secret key; the engine gets them as --api-key-file.
+  existingSecret: ""
+  existingSecretKey: token
+  apiKey: ""
+  apiKeys: []
+
+service:
+  type: ClusterIP
+  port: 8888             # the API port on the leader (hostNetwork)
+
+ingress:
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# k3s registers the `nvidia` containerd runtime when the NVIDIA container toolkit
+# is installed; GPU pods need it.
+runtimeClassName: nvidia
+
+shm:
+  sizeLimit: 32Gi
+
+# No memory limit: unified memory, and a limit gets the engine killed while its
+# weights load. The 100Gi request keeps other pods off the node.
+resources:
+  requests:
+    cpu: "2"
+    memory: 100Gi
+  limits:
+    nvidia.com/gpu: 1
+
+probes:
+  # Rank 0 only. Loading takes a few minutes; the prepare init container runs
+  # before these count.
+  startup:
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 240
+  liveness:
+    periodSeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 10
+  readiness:
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 3
+
+podAnnotations: {}

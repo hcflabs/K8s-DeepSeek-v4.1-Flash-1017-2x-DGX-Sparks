@@ -1,0 +1,76 @@
+name: Bug report
+description: The chart, the playbooks, a script or CI does not behave as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not paste API keys, k3s join tokens, vault
+        passwords or your cluster's addresses.** Redact `values.yaml` before
+        pasting it; this repository's examples deliberately carry no real
+        deployment details.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+      placeholder: |
+        I ran `scripts/apply.sh -f my-values.yaml` and the worker pod stayed
+        Pending...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Helm chart (templates, values, probes, Service/Ingress)
+        - Entrypoint scripts (chart/files)
+        - Ansible playbooks (join, fabric, labels)
+        - Scripts (prepare-model, apply, verify, smoke, check-anchors)
+        - CI or the release workflow
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Chart version, how you installed it, k8s/k3s version, node and GPU, checkpoint lane.
+      placeholder: |
+        chart: 0.1.0 (helm get metadata dsv41-flash-1017-tensorfold -n tensorfold)
+        install: helm upgrade --install / OCI / k3s HelmChart CR
+        k3s: v1.xx.y+k3s1
+        nodes: 2x DGX Spark (GB10, arm64)
+        lane: official
+    validations:
+      required: true
+  - type: textarea
+    id: values
+    attributes:
+      label: Relevant values
+      description: The overrides you set, with secrets and addresses redacted.
+      render: yaml
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Output
+      description: |
+        `helm template` output, `kubectl -n <ns> get pods -o wide`, and the
+        pod's logs. For a startup or fabric problem, the NCCL line matters:
+        `NET/IB` means the RDMA path, `NET/Socket` means a silent TCP fallback.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues
+          required: true
+        - label: This is not an upstream recipe, image or model issue (those go to MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks)
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md)
+          required: true

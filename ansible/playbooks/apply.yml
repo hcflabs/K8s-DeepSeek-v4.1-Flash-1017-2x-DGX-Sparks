@@ -1,0 +1,22 @@
+---
+# Bootstrap/apply from the control machine: pinned arm64 device plugin first,
+# then the serving chart. Thin wrapper over scripts/apply.sh so there is one
+# implementation of the ordering.
+#
+#   ansible-playbook playbooks/apply.yml -e chart_values=/path/to/values.yaml
+- name: Install the device plugin, then the serving chart
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    chart_values: ""
+    chart_namespace: tensorfold
+    chart_release: dsv41-flash-1017-tensorfold
+  tasks:
+    - name: Run scripts/apply.sh
+      ansible.builtin.command:
+        argv: >-
+          {{ [playbook_dir ~ '/../../scripts/apply.sh', '-n', chart_namespace, '-r', chart_release]
+             + (['-f', chart_values] if chart_values else []) }}
+      changed_when: true

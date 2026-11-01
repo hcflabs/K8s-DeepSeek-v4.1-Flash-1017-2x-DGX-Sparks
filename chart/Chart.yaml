@@ -1,0 +1,16 @@
+apiVersion: v2
+name: dsv41-flash-1017-tensorfold
+description: >-
+  DeepSeek-V4.1-Flash-1017 (EXL3 EAQ 2.9 bpw, 1M context, vision, DSpark drafts)
+  served tensor-parallel (TP=2) across two NVIDIA DGX Spark nodes on Kubernetes/k3s
+  with TensorFold's native Zig engine and Mia's AI Lab patch series.
+type: application
+version: 0.1.0
+appVersion: "exl3-tp2-7d71dcdf7f2f"
+kubeVersion: ">=1.28.0-0"
+home: https://github.com/hcflabs/K8s-DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks
+sources:
+  - https://github.com/hcflabs/K8s-DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks
+  - https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks
+  - https://github.com/bertholomus/TensorFold
+keywords: [tensorfold, deepseek, exl3, dgx-spark, gb10, rdma, k3s]

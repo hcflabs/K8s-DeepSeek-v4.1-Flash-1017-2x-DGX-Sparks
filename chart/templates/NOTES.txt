@@ -1,0 +1,12 @@
+{{ .Chart.Name }} {{ .Release.Name }} installed in namespace {{ .Release.Namespace }}.
+
+First start per node: the prepare init container writes the rank's ~106 GB weight
+file (a few minutes), then each rank loads ~98 GiB of weights.
+  kubectl -n {{ .Release.Namespace }} get pods -o wide
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "dsv41.fullname" . }}-leader -c prepare
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "dsv41.fullname" . }} 8888:{{ .Values.service.port }}
+  curl -s localhost:8888/v1/models   # expect id {{ .Values.model.servedName }}
+{{- if not (include "dsv41.authSecretName" .) }}
+
+WARNING: /v1 is unauthenticated. Set auth.existingSecret or auth.apiKey to require a key.
+{{- end }}
