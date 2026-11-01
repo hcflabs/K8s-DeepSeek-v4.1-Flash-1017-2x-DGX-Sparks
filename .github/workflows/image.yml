@@ -1,0 +1,80 @@
+name: image
+
+# Builds the engine image (zig/Dockerfile + zig/patches) on a GitHub arm64 runner
+# and pushes ghcr.io/hcflabs/dsv41-flash-1017-tensorfold:<scripts/image-tag.sh>.
+# No GPU is needed to build. The base image is ~20 GB unpacked, so the runner's
+# disk is cleared first; if it still runs out, build on a Spark instead with
+# scripts/build-image.sh.
+#
+#   gh workflow run image.yml
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/boost || true
+          sudo docker system prune -af >/dev/null || true
+          df -h /
+      - name: Tag and build arguments
+        id: meta
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/image.env
+          source scripts/image.env
+          {
+            echo "tag=$(scripts/image-tag.sh)"
+            echo "hash=$(scripts/image-tag.sh --hash)"
+            echo "repo=${IMAGE_REPOSITORY}"
+            echo "base=${BASE_IMAGE}"
+            echo "tf_repo=${TF_REPO}"
+            echo "tf_ref=${TF_REF}"
+            echo "inputs_ref=${INPUTS_REF}"
+            echo "zig_version=${ZIG_VERSION}"
+            echo "zig_sha=${ZIG_SHA256}"
+            echo "zig_mirrors=${ZIG_MIRRORS}"
+          } >>"${GITHUB_OUTPUT}"
+      - name: Build context (upstream prepare.sh's)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ctx/zig
+          cp -r zig/patches zig/patches-inputs /tmp/ctx/zig/
+          cp zig/Dockerfile /tmp/ctx/Dockerfile
+      - name: Log in to ghcr.io
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s\n' "${TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
+      - name: Build and push
+        env:
+          IMAGE: ${{ steps.meta.outputs.repo }}:${{ steps.meta.outputs.tag }}
+          M: ${{ toJSON(steps.meta.outputs) }}
+        run: |
+          set -euo pipefail
+          o() { jq -r ".$1" <<<"${M}"; }
+          docker build -t "${IMAGE}" -f /tmp/ctx/Dockerfile \
+            --build-arg BASE_IMAGE="$(o base)" --build-arg TF_REPO="$(o tf_repo)" --build-arg TF_REF="$(o tf_ref)" \
+            --build-arg INPUTS_REF="$(o inputs_ref)" --build-arg ZIG_VERSION="$(o zig_version)" \
+            --build-arg ZIG_SHA256="$(o zig_sha)" --build-arg ZIG_MIRRORS="$(o zig_mirrors)" \
+            --build-arg PATCHES_HASH="$(o hash)" \
+            --label org.opencontainers.image.source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            /tmp/ctx
+          [[ "$(docker image inspect -f '{{index .Config.Labels "tf.patches"}}' "${IMAGE}")" == "$(o hash)" ]]
+          docker push "${IMAGE}"
+          echo "pushed ${IMAGE}" >>"${GITHUB_STEP_SUMMARY}"
+          docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}" >>"${GITHUB_STEP_SUMMARY}"

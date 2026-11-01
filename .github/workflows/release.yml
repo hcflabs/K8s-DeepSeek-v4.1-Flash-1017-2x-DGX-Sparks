@@ -1,0 +1,202 @@
+name: release
+
+# The only release path. Version bump, chart/Chart.yaml, chart/CHANGELOG.md, the
+# git tag, the OCI push and the GitHub Release are all produced here; nothing is
+# released from a workstation. Run it from the Actions tab, or:
+#
+#   gh workflow run release.yml -f bump=auto
+#
+# Every step is idempotent, so re-running a partially failed release either
+# resumes it or republishes, rather than cutting a second version.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump (auto = derive it from the commits)
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+permissions:
+  contents: write   # commit the bump, push the tag, create the Release
+  packages: write   # push the chart to ghcr.io
+
+# Never two releases at once.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Pinned: cliff.toml's template and bump rules are verified against this version.
+  GIT_CLIFF_VERSION: v2.14.2
+  CHART_DIR: chart
+  CHART_NAME: dsv41-flash-1017-tensorfold
+  CHANGELOG: chart/CHANGELOG.md
+  # Repository-root copy, kept identical so visitors find a changelog where
+  # they expect one while the chart still ships its own for Artifact Hub.
+  CHANGELOG_ROOT: CHANGELOG.md
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # git-cliff needs the tags and the whole history, not a shallow clone.
+          fetch-depth: 0
+
+      - name: Install git-cliff
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) target=x86_64-unknown-linux-gnu ;;
+            aarch64) target=aarch64-unknown-linux-gnu ;;
+            *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          version="${GIT_CLIFF_VERSION#v}"
+          curl -sSfL "https://github.com/orhun/git-cliff/releases/download/${GIT_CLIFF_VERSION}/git-cliff-${version}-${target}.tar.gz" | tar xz -C /tmp
+          install -m 0755 "/tmp/git-cliff-${version}/git-cliff" /usr/local/bin/git-cliff
+          git-cliff --version
+          # git-cliff silently falls back to its own template when the config is
+          # missing, which mangles the changelog header. Refuse to run that way.
+          test -f cliff.toml || { echo "ERROR: cliff.toml is missing" >&2; exit 1; }
+
+      - uses: azure/setup-helm@v5
+
+      - name: Determine the chart version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          current="$(awk '/^version:/ {print $2; exit}' "${CHART_DIR}/Chart.yaml")"
+          tags="$(git tag -l 'v*' || true)"
+          has_section() { grep -q "^## \[$1\]" "${CHANGELOG}" 2>/dev/null; }
+          tagged() { git rev-parse -q --verify "refs/tags/v$1" >/dev/null; }
+          apply=1
+
+          if [[ -z "${tags}" ]]; then
+            # Bootstrap: nothing has ever been released, so release the version
+            # already in Chart.yaml (git-cliff would derive one from initial_tag).
+            version="${current}"
+            echo "first release: publishing Chart.yaml's ${version}"
+          else
+            if [[ "${BUMP}" == "auto" ]]; then
+              version="$(git-cliff --config cliff.toml --bumped-version)"
+            else
+              version="$(git-cliff --config cliff.toml --bumped-version --bump="${BUMP}")"
+            fi
+            version="${version#v}"
+
+            if [[ "${version}" == "${current}" ]] && tagged "${version}"; then
+              # Already bumped, committed and tagged by an earlier attempt that
+              # failed later, or a re-run of a completed release. Publishing is
+              # idempotent, so this is a no-op in the latter case.
+              apply=0
+              echo "v${version} is already tagged: publishing only (no-op if already published)"
+            elif [[ "${version}" == "${current}" ]] && has_section "${version}"; then
+              # Chart.yaml and the changelog were updated but the tag never made
+              # it: tag and publish.
+              echo "v${version} was prepared but not tagged: tagging"
+            elif [[ "${version}" == "${current}" ]]; then
+              echo "ERROR: no release-worthy commits since the last tag (next = ${version})." >&2
+              echo "       feat bumps minor; fix/perf/refactor/build/revert bump patch;" >&2
+              echo "       docs/chore/ci/test do not. Force one with the bump input." >&2
+              exit 1
+            elif [[ "$(printf '%s\n%s\n' "${current}" "${version}" | sort -V | tail -1)" != "${version}" ]]; then
+              echo "ERROR: next version ${version} does not advance ${current}." >&2
+              echo "       Chart.yaml was presumably hand-bumped past the last tag." >&2
+              exit 1
+            fi
+          fi
+
+          echo "version=${version}" >>"${GITHUB_OUTPUT}"
+          echo "apply=${apply}" >>"${GITHUB_OUTPUT}"
+          echo "releasing ${version} (Chart.yaml held ${current}, apply=${apply})"
+
+      - name: Bump Chart.yaml, changelog, commit and tag
+        if: steps.version.outputs.apply == '1'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          # Version. No `sed -i`: GNU and BSD sed disagree about its argument,
+          # and a silently failed edit would publish the wrong version. Rewrite
+          # to a temp file, verify, then move into place.
+          count="$(grep -c '^version:' "${CHART_DIR}/Chart.yaml")"
+          [[ "${count}" == "1" ]] || { echo "ERROR: expected exactly one 'version:' line, found ${count}" >&2; exit 1; }
+          sed "s|^version: .*|version: ${VERSION}|" "${CHART_DIR}/Chart.yaml" >/tmp/Chart.yaml
+          grep -qx "version: ${VERSION}" /tmp/Chart.yaml || { echo "ERROR: failed to set version to ${VERSION}" >&2; exit 1; }
+          mv /tmp/Chart.yaml "${CHART_DIR}/Chart.yaml"
+          # appVersion tracks the serving image, not the chart, and is left alone.
+
+          # Changelog. Same invocation that produced the version, so the new
+          # section is labelled with it. Skipped if a re-run already wrote it.
+          if grep -q "^## \[${VERSION}\]" "${CHANGELOG}"; then
+            echo "changelog already has a ${VERSION} section"
+          elif [[ "${BUMP}" == "auto" ]]; then
+            git-cliff --config cliff.toml --unreleased --bump --prepend "${CHANGELOG}"
+          else
+            git-cliff --config cliff.toml --unreleased --bump="${BUMP}" --prepend "${CHANGELOG}"
+          fi
+
+          cp "${CHANGELOG}" "${CHANGELOG_ROOT}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${CHART_DIR}/Chart.yaml" "${CHANGELOG}" "${CHANGELOG_ROOT}"
+          git diff --cached --quiet || git commit -m "chore(release): v${VERSION}"
+
+          # Annotated, and pushed explicitly: `git push --follow-tags` only
+          # pushes annotated tags, so a lightweight tag would silently never
+          # reach the remote (and `gh release create --verify-tag` would fail).
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "tag v${VERSION} already exists"
+          else
+            git tag -a "v${VERSION}" -m "v${VERSION}"
+          fi
+          # Pushing with GITHUB_TOKEN does not trigger other workflows, which is
+          # why publishing happens below in this same job.
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "v${VERSION}"
+
+      - name: Lint and package
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          helm lint "${CHART_DIR}" -f "${CHART_DIR}/ci/test-values.yaml"
+          # No --version: the packaged chart must carry the committed
+          # Chart.yaml version, which the tag was checked against above.
+          helm package "${CHART_DIR}" -d dist
+          helm show chart "dist/${CHART_NAME}-${VERSION}.tgz" | sed -n '1,6p'
+
+      - name: Push the chart to ghcr.io as OCI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          repo="oci://ghcr.io/${owner}/charts"
+          echo "${GITHUB_TOKEN}" | helm registry login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          # Idempotent: a re-run must not fail just because the version is up.
+          if helm show chart "${repo}/${CHART_NAME}" --version "${VERSION}" >/dev/null 2>&1; then
+            echo "${CHART_NAME} ${VERSION} is already published"
+          else
+            helm push "dist/${CHART_NAME}-${VERSION}.tgz" "${repo}"
+          fi
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          git-cliff --config cliff.toml --latest --strip header >notes.md
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release edit "v${VERSION}" --title "v${VERSION}" --notes-file notes.md
+          else
+            gh release create "v${VERSION}" --title "v${VERSION}" --notes-file notes.md --verify-tag
+          fi

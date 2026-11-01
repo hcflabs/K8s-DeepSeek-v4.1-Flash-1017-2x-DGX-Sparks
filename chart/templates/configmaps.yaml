@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dsv41.fullname" . }}-serve
+  labels:
+    {{- include "dsv41.labels" . | nindent 4 }}
+data:
+  serve.sh: |-
+{{ .Files.Get "files/serve.sh" | indent 4 }}
+  prepare.sh: |-
+{{ .Files.Get "files/prepare.sh" | indent 4 }}
+  chat_template.jinja: |-
+{{ .Files.Get "files/chat_template.jinja" | indent 4 }}

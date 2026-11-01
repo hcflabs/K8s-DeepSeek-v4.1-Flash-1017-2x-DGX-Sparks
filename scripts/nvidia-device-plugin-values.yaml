@@ -1,0 +1,25 @@
+# Values for the NVIDIA device plugin chart (pinned in scripts/apply.sh).
+#
+# The image tag is pinned alongside the chart: the chart only defaults the tag
+# to its appVersion, and a stale render once resolved to the amd64-only
+# 1.0.0-beta4 image, which crashloops on the arm64 Sparks with
+# "exec /usr/bin/nvidia-device-plugin: exec format error".
+runtimeClassName: nvidia   # the plugin has to run through the nvidia runtime to see the device
+
+image:
+  repository: nvcr.io/nvidia/k8s-device-plugin
+  tag: v0.19.3             # multi-arch build matching chart 0.19.3
+
+nodeSelector:
+  nvidia.com/gpu.present: "true"   # set by the Ansible playbook at registration
+
+# Default tolerations already include nvidia.com/gpu:NoSchedule.
+# Nodes are labeled by Ansible, so node/gpu-feature-discovery stay off.
+nfd:
+  enabled: false
+gfd:
+  enabled: false
+
+resources:
+  requests: {cpu: 50m, memory: 64Mi}
+  limits: {memory: 128Mi}

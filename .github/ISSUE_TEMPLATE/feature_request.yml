@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest a change to the chart, the playbooks, the scripts or CI
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: Describe the situation, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Including any workaround you use today.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Helm chart (templates, values, probes, Service/Ingress)
+        - Hotfix / entrypoint scripts (chart/files)
+        - Ansible playbooks (join, fabric, labels)
+        - Scripts (prepare-model, apply, verify, smoke, check-anchors)
+        - CI or the release workflow
+        - Documentation
+    validations:
+      required: true
+  - type: checkboxes
+    id: portability
+    attributes:
+      label: Portability
+      description: |
+        The chart defaults to neutral: no site addresses, no weights paths, no
+        auth. Features that need a specific cluster, DNS or a managed secret
+        store are usually better as documented values overrides.
+      options:
+        - label: This works with no site-specific defaults, or I explain below why it cannot
+          required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else

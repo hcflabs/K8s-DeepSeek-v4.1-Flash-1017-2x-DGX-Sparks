@@ -1,0 +1,70 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - name: helm lint
+        run: helm lint chart -f chart/ci/test-values.yaml
+      - name: helm template (defaults, ingress, auth variants, refusals)
+        run: |
+          set -euo pipefail
+          V=(-f chart/ci/test-values.yaml)
+          helm template ci chart "${V[@]}" > /dev/null
+          helm template ci chart "${V[@]}" --set 'ingress.hosts[0]=llm.example.com' > /dev/null
+          helm template ci chart "${V[@]}" --set auth.apiKey=test > /dev/null
+          helm template ci chart "${V[@]}" --set prepare.enabled=false > /dev/null
+          if helm template ci chart > /dev/null 2>&1; then echo "chart must require site values"; exit 1; fi
+          refuse() { if helm template ci chart "${V[@]}" "$@" > /dev/null 2>&1; then echo "must refuse: $*"; exit 1; fi; }
+          refuse --set serving.context=2000000
+          refuse --set serving.parallelRequests=17
+          refuse --set serving.pool=1024
+          refuse --set serving.roundRows=24
+          refuse --set serving.reasoningEffort=max
+          refuse --set topology.fabric.gidIndex=null
+      - name: rank env matches upstream start.sh
+        run: |
+          set -euo pipefail
+          V=(-f chart/ci/test-values.yaml)
+          env_of() { helm template ci chart "${V[@]}" "${@:3}" |
+            yq "select(.kind == \"Deployment\" and .metadata.name == \"*-$1\") | .spec.template.spec.containers[0].env[] | select(.name == \"$2\") | .value"; }
+          check() { got="$(env_of "$1" "$2" "${@:4}")"; [[ "$got" == "$3" ]] || { echo "$1 $2=$got, want $3 (${*:4})"; exit 1; }; }
+          for r in leader worker; do
+            check "$r" TF_DS_REPLAY_FLOOR 1
+            check "$r" TF_RDMA_GID_INDEX 3
+            check "$r" NCCL_IB_GID_INDEX 3
+            check "$r" NCCL_IB_HCA rdma0,rdma1
+            check "$r" TF_DS_PREFILL_INTERLEAVE_MS 250
+            check "$r" TENSORFOLD_THINKING 0 --set serving.thinking=false
+            check "$r" TENSORFOLD_DRAFTS 0 --set serving.drafts=false
+            check "$r" TF_FILL_X 7 --set engine.env.TF_FILL_X=7
+          done
+          check leader TENSORFOLD_NODE_RANK 0
+          check worker TENSORFOLD_NODE_RANK 1
+          [[ -z "$(env_of worker TENSORFOLD_API_KEYS --set auth.apiKey=x)" ]] || { echo "the worker must not get the API keys"; exit 1; }
+          dup="$(helm template ci chart "${V[@]}" | yq 'select(.kind == "Deployment") | .spec.template.spec.containers[].env | map(.name) | group_by(.) | map(select(length > 1) | .[0]) | .[]')"
+          [[ -z "$dup" ]] || { echo "env names rendered more than once in a container: $dup"; exit 1; }
+      - name: image tag in values.yaml is the one zig/ and scripts/image.env give
+        run: |
+          set -euo pipefail
+          want="$(scripts/image-tag.sh)"
+          got="$(yq '.image.tag' chart/values.yaml)"
+          [[ "$got" == "$want" ]] || { echo "chart/values.yaml image.tag=$got, but zig/ and scripts/image.env give $want"; exit 1; }
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning chart/files/*.sh scripts/*.sh
+      - name: actionlint (workflows, plus shellcheck on run blocks)
+        run: |
+          set -euo pipefail
+          version=1.7.12
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz" | tar xz -C /tmp actionlint
+          /tmp/actionlint -color .github/workflows/*.yml
+      - name: embedded script syntax
+        run: scripts/check-anchors.sh

@@ -1,5 +1,11 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
-  - name: I want help using this model kit on my own hardware.
-    url: https://x.com/MiaAI_lab
-    about: Ask questions about setting this up on a different box, or about how a particular piece of this kit works.
+  - name: Security vulnerability
+    url: https://github.com/hcflabs/K8s-DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/security/advisories/new
+    about: Report privately. Please do not open a public issue for anything exploitable.
+  - name: Upstream recipe or serving image
+    url: https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/issues
+    about: The TensorFold recipe and the serving image originate upstream.
+  - name: Deployment help
+    url: https://github.com/hcflabs/K8s-DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/blob/main/README.md
+    about: The README quick start covers provision, weights, apply and verify; ENVS.md maps every value.

@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Workflow actions. Versions are pinned by tag in .github/workflows/, so this
+  # is the only automated supply-chain update in the repo.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      # ci: does not bump the chart version (RELEASING.md).
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # NOTE: the chart has no Chart.yaml dependencies, and the pinned toolchain
+  # versions (GIT_CLIFF_VERSION in the release workflow, the actionlint and helm
+  # versions in ci.yml) and the image tag/digest in chart/values.yaml are bumped
+  # by hand so that an anchor check runs with them. See CONTRIBUTING.md.

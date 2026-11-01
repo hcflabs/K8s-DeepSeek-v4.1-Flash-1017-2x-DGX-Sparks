@@ -1,3 +1,7 @@
-scripts/local.sh
-.env
+.pi/
+ansible/collections/
+dist/
+*.retry
+openspec/
 __pycache__/
+.env

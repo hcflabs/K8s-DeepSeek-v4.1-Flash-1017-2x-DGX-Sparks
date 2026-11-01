@@ -1,0 +1,145 @@
+---
+# Bare DGX Spark hosts -> k3s agents ready for the dsv41-flash-1017-tensorfold chart.
+# Agent-only: only the `prereq` and `k3s_agent` roles run; no server role is used.
+#
+#   ansible-playbook playbooks/site.yml                 # everything
+#   ansible-playbook playbooks/site.yml --tags gpu_fabric   # fabric + verify only
+#   ansible-playbook playbooks/site.yml --check
+- name: Prepare GPU node prerequisites
+  hosts: gpu
+  become: true
+  tasks:
+    - name: Ensure model directory exists
+      ansible.builtin.file:
+        path: "{{ gpu_models_dir }}"
+        state: directory
+        mode: "0755"
+
+    # k3s only registers the `nvidia` containerd runtime if it finds this binary
+    # at install time. Failing here beats a node that joins fine but cannot run
+    # GPU pods.
+    - name: Look for nvidia-container-runtime
+      ansible.builtin.command: which nvidia-container-runtime
+      register: nvidia_runtime_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert nvidia-container-runtime is on PATH
+      ansible.builtin.assert:
+        that: nvidia_runtime_check.rc == 0
+        fail_msg: >-
+          nvidia-container-runtime not found on PATH. Install the NVIDIA
+          container toolkit before joining this node, otherwise k3s will not
+          register the `nvidia` containerd runtime.
+
+    # The ConnectX-7 link comes up ACTIVE but unaddressed, and NetworkManager's
+    # default DHCP profile never completes on a point-to-point cable. Without a
+    # static address NCCL cannot form the group. mode 0600: netplan refuses
+    # world-readable files.
+    - name: Configure the point-to-point GPU fabric link
+      tags: gpu_fabric
+      ansible.builtin.copy:
+        dest: /etc/netplan/70-tensorfold-gpu-fabric.yaml
+        mode: "0600"
+        content: |
+          # Managed by ansible/playbooks/site.yml. Do not edit by hand.
+          network:
+            version: 2
+            renderer: NetworkManager
+            ethernets:
+              {{ gpu_fabric_interface }}:
+                addresses:
+                  - {{ gpu_fabric_address }}
+                dhcp4: false
+                dhcp6: false
+                accept-ra: false
+                link-local: []
+                mtu: 9000
+                optional: true
+      notify: Apply netplan configuration
+
+    # A userspace OOM daemon reads the engine's ~100 GB of the 121 GB unified
+    # pool as an emergency and kills TensorFold under deep-context load.
+    - name: Ensure earlyoom is not installed
+      tags: gpu_fabric
+      ansible.builtin.apt:
+        name: earlyoom
+        state: absent
+
+  handlers:
+    - name: Apply netplan configuration
+      ansible.builtin.command: netplan apply
+      changed_when: true
+
+- name: Verify the GPU fabric link is usable by NCCL
+  hosts: gpu
+  become: true
+  tags: gpu_fabric
+  tasks:
+    # If NetworkManager's auto DHCP profile wins the device the port is ACTIVE
+    # with no address: link up, NCCL dead. Check for the address we asked for.
+    - name: Read the addresses on the fabric link
+      ansible.builtin.command:
+        argv: [ip, -4, -brief, address, show, "{{ gpu_fabric_interface }}"]
+      register: gpu_fabric_addr
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert the fabric link carries its configured address
+      ansible.builtin.assert:
+        that: "gpu_fabric_address in gpu_fabric_addr.stdout | default('')"
+        fail_msg: >-
+          {{ gpu_fabric_interface }} does not carry {{ gpu_fabric_address }}
+          (got: {{ gpu_fabric_addr.stdout | default('nothing') }}). Usually a
+          NetworkManager auto-DHCP profile claimed the device instead of the
+          netplan one; run `netplan apply` or check
+          `nmcli device show {{ gpu_fabric_interface }}`.
+      when: not ansible_check_mode
+
+    - name: Check the fabric peer is reachable
+      ansible.builtin.command:
+        argv: [ping, -c, "3", -W, "2", -I, "{{ gpu_fabric_interface }}", "{{ gpu_fabric_peer }}"]
+      register: gpu_fabric_ping
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert the fabric peer answers
+      ansible.builtin.assert:
+        that: gpu_fabric_ping.rc == 0
+        fail_msg: >-
+          {{ gpu_fabric_peer }} is unreachable over {{ gpu_fabric_interface }}.
+          Tensor-parallel all-reduce needs this link. If the cable is on the
+          other port, set gpu_fabric_interface/gpu_fabric_rdma_device to that
+          port's netdev and RDMA device names.
+      when: not ansible_check_mode
+
+    # NCCL needs the RDMA device, not just the IP. ACTIVE separates the RoCE
+    # path from the TCP fallback.
+    - name: Check the RDMA device backing the fabric link is ACTIVE
+      ansible.builtin.command:
+        argv: [cat, "/sys/class/infiniband/{{ gpu_fabric_rdma_device }}/ports/1/state"]
+      register: gpu_fabric_rdma_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert the RDMA device is ACTIVE
+      ansible.builtin.assert:
+        that: "'ACTIVE' in gpu_fabric_rdma_state.stdout | default('')"
+        fail_msg: >-
+          RDMA device {{ gpu_fabric_rdma_device }} is not ACTIVE
+          (got: {{ gpu_fabric_rdma_state.stdout | default('missing') }}).
+          NCCL_IB_HCA would match nothing and silently fall back to TCP.
+      when: not ansible_check_mode
+
+# Agent-only join to the existing control plane. `server` stays an empty group.
+- name: Join the Sparks to the existing k3s cluster as agents
+  hosts: gpu
+  gather_facts: true
+  become: true
+  roles:
+    - role: k3s.orchestration.prereq
+    - role: k3s.orchestration.k3s_agent

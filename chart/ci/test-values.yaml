@@ -1,0 +1,12 @@
+# Placeholder values for lint/template in CI (documentation address ranges).
+topology:
+  fabric:
+    masterAddr: 198.51.100.1
+    workerAddr: 198.51.100.2
+    interface: fabric0
+    rdmaDevice: rdma0,rdma1
+    gidIndex: 3
+weights:
+  hostPath:
+    leader: /data/models/DeepSeek-V4.1-Flash-1017
+    worker: /data/models/DeepSeek-V4.1-Flash-1017
