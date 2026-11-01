@@ -121,7 +121,9 @@ ingress:
   hosts: []
   tls: []
 
-runtimeClassName: ""
+# k3s registers the `nvidia` containerd runtime when the NVIDIA container toolkit
+# is installed; GPU pods need it.
+runtimeClassName: nvidia
 
 shm:
   sizeLimit: 32Gi

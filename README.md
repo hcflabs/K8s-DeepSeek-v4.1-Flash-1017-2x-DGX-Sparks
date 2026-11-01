@@ -10,7 +10,7 @@ on a k3s cluster instead of `./start.sh` and Docker:
   (196 GiB), with Engram's tables from the base model, a 1,048,576-token window,
   images, tool calls, thinking on or off, DSpark drafts.
 - **Engine:** TensorFold's native Zig engine (BertholomusAI's `dsv41` family, TP=2),
-  with **upstream's patch series** (`zig/patches`, 34 patches) baked into the image
+  with **upstream's patch series** (`zig/patches`, 33 patches) baked into the image
   this repository builds.
 - **API:** OpenAI-compatible (and Anthropic Messages), model id
   `DeepSeek-V4.1-Flash-1017`, port 8888 on the leader.

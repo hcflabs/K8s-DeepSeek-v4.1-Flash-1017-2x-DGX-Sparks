@@ -4,7 +4,7 @@ Derived from `MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks` (git remote
 `upstream`, read-only). This repository started as a copy of it; the Docker
 launcher was replaced by a Helm chart.
 
-- **Pinned upstream ref:** `main` at `0e7d421` (2026-10-29; 34 engine patches,
+- **Pinned upstream ref:** `main` at `0e7d421` (2026-10-29; 33 engine patches,
   `zig/patches/0001`-`0038`, and 2 inputs patches).
 - **Engine:** BertholomusAI's TensorFold fork, branch `deepseek-v41-zig`, at
   `TF_REF` `fbbc9713`; the inputs' tools from branch `deepseek-v41-zig-tp4` at
