@@ -18,7 +18,15 @@
 #
 # Env (set by the chart): TENSORFOLD_NODE_RANK, TENSORFOLD_ROOT (default /models),
 #   TENSORFOLD_CHAT_TEMPLATE (path of the template to serve), TENSORFOLD_VERIFY_KIT
-#   ("1": check MANIFEST), TENSORFOLD_MIN_FREE_GIB (disk floor for the weight file)
+#   ("1": check MANIFEST), TENSORFOLD_MIN_FREE_GIB (disk floor for the weight file),
+#   TENSORFOLD_ABLIT ("1": apply the Keys overlay), TENSORFOLD_ABLIT_REVISION (its pin)
+#
+# ABLIT=1 (upstream scripts/prepare.sh's ABLIT block): scripts/prepare-model.sh --ablit
+# has put drowzeys' gated overlay files in ablit/<revision>/. The overlay is applied
+# to a hardlinked copy of checkpoint/ in data/ablit-<rev8>/checkpoint (stock stays
+# intact), the four MTP tensors get their stock dtypes back (ablit_stock_dtypes.py),
+# and that folder gets its own rank-cache/ and model/, so stock and abliterated
+# weight files are never mixed up.
 set -euo pipefail
 
 RANK="${TENSORFOLD_NODE_RANK:?TENSORFOLD_NODE_RANK must be set}"
@@ -45,7 +53,50 @@ done
 [[ -f "${KIT}/MANIFEST" ]] || die "no kit at ${KIT} (run scripts/prepare-model.sh)"
 [[ -f "${TEMPLATE}" ]] || die "chat template ${TEMPLATE} missing"
 [[ -f "${ROOT}/checkpoint.ref" ]] && log "checkpoint: $(cat "${ROOT}/checkpoint.ref")"
-mkdir -p "${DATA}/rank-cache"
+
+# ── 0. ABLIT: the Keys overlay on a copy of the checkpoint (before any weight file) ──
+ABLIT="${TENSORFOLD_ABLIT:-0}"
+ABLIT_REVISION="${TENSORFOLD_ABLIT_REVISION:-}"
+ABLIT_SIDECAR=exl3_wo_b_l10_35_mia29.safetensors
+MDATA="${DATA}"   # where this mode's rank-cache/ and model/ live
+[[ "${ABLIT}" == 0 || "${ABLIT}" == 1 ]] || die "TENSORFOLD_ABLIT is 0 or 1, not ${ABLIT}"
+if [[ "${ABLIT}" == 1 ]]; then
+  [[ "${ABLIT_REVISION}" =~ ^[0-9a-f]{40}$ ]] || die "TENSORFOLD_ABLIT_REVISION must be a full commit hash"
+  ref="$(cat "${ROOT}/checkpoint.ref" 2>/dev/null || true)"
+  [[ "${ref}" == *EAQ-v1-2.9-bpw@* ]] ||
+    die "ablit needs the EAQ v1 2.9 bpw checkpoint (its matching overlay), not '${ref:-unknown}': re-run prepare-model.sh without --eaq-v1-1"
+  OVL="${ROOT}/ablit/${ABLIT_REVISION}"
+  for f in apply_mia29_wo_b_graft.py "${ABLIT_SIDECAR}" EXL3_MIA29_ABLIT_META.json; do
+    [[ -s "${OVL}/${f}" ]] || die "overlay file ${OVL}/${f} missing (run scripts/prepare-model.sh --ablit with an HF token that has access)"
+  done
+  MDATA="${DATA}/ablit-${ABLIT_REVISION:0:8}"
+  ACKPT="${MDATA}/checkpoint"
+  mkdir -p "${MDATA}"
+  if [[ ! -f "${ACKPT}/.ablit-ready" ]]; then
+    log "applying the Keys overlay @${ABLIT_REVISION:0:8} in ${ACKPT} (changed shards need extra disk)"
+    rm -rf "${ACKPT}.new" "${MDATA}/stock.new"
+    # Hardlinks: same filesystem, no copy of the 196 GiB. The overlay rewrites the index, so it gets its own copy.
+    cp -al "${CKPT}/." "${MDATA}/stock.new/" || die "could not hardlink the checkpoint into ${MDATA}"
+    rm -rf "${MDATA}/stock.new/.cache"
+    rm -f "${MDATA}/stock.new/model.safetensors.index.json"
+    cp --no-preserve=mode "${CKPT}/model.safetensors.index.json" "${MDATA}/stock.new/"
+    python3 "${OVL}/apply_mia29_wo_b_graft.py" --src "${MDATA}/stock.new" --dst "${ACKPT}.new" \
+      --wo-b "${OVL}/${ABLIT_SIDECAR}" || die "applying the overlay failed; restart the pod to retry"
+    python3 -I -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["n_edited"] == 104, "expected 104 overlay tensors"' \
+      "${ACKPT}.new/ABLIT_META.json" || die "the overlay did not replace all 104 tensors"
+    python3 -I /etc/tensorfold/ablit_stock_dtypes.py "${CKPT}" "${ACKPT}.new" ||
+      die "could not give the overlay checkpoint its stock dtypes back"
+    touch "${ACKPT}.new/.ablit-ready"
+    rm -rf "${ACKPT}" && mv "${ACKPT}.new" "${ACKPT}"
+    rm -rf "${MDATA}/stock.new"
+  else
+    log "overlay checkpoint ready: ${ACKPT}"
+    python3 -I /etc/tensorfold/ablit_stock_dtypes.py "${CKPT}" "${ACKPT}" ||
+      die "could not give the overlay checkpoint its stock dtypes back"
+  fi
+  CKPT="${ACKPT}"
+fi
+mkdir -p "${MDATA}/rank-cache"
 
 # ── 1. the kit's RoPE tables and image routing bias ──
 if [[ ! -s "${KIT}/rope-plain-cos.f32" || ! -s "${KIT}/rope-compressed-sin.f32" ]]; then
@@ -91,25 +142,26 @@ fi
 
 # ── 4. this rank's weight file (its name carries the index's hash) ──
 want="$(tf-dsv41-rank-cache "${CKPT}" /tmp/rank-index "${RANK}" 2 --index-only | sha256sum | cut -c1-20)"
-file="${DATA}/rank-cache/rank${RANK}of2-${want}.bin"
+file="${MDATA}/rank-cache/rank${RANK}of2-${want}.bin"
 if [[ -f "${file}" ]]; then
   log "weight file ready: ${file##*/}"
 else
-  find "${DATA}/rank-cache" -maxdepth 1 -name "rank${RANK}of2-*.bin" -delete
-  rm -f "${DATA}/rank-cache/.rank${RANK}of2.partial"
-  free=$(df -B1 --output=avail "${DATA}/rank-cache" | tail -1)
+  find "${MDATA}/rank-cache" -maxdepth 1 -name "rank${RANK}of2-*.bin" -delete
+  rm -f "${MDATA}/rank-cache/.rank${RANK}of2.partial"
+  free=$(df -B1 --output=avail "${MDATA}/rank-cache" | tail -1)
   (( free > MIN_FREE_GIB * 1024 ** 3 )) ||
     die "$(( free / 1024 ** 3 )) GiB free for the weight file; it needs ~106 GB (floor ${MIN_FREE_GIB} GiB)"
   log "writing rank ${RANK}'s weight file from the checkpoint (~106 GB, a few minutes)"
-  tf-dsv41-rank-cache "${CKPT}" "${DATA}/rank-cache" "${RANK}" 2 >/dev/null || die "tf-dsv41-rank-cache failed"
+  tf-dsv41-rank-cache "${CKPT}" "${MDATA}/rank-cache" "${RANK}" 2 >/dev/null || die "tf-dsv41-rank-cache failed"
   [[ -f "${file}" ]] || die "tf-dsv41-rank-cache wrote no ${file##*/}"
   log "weight file written: ${file##*/}"
 fi
 
 # ── 5. the folder rank 0 serves: every checkpoint file linked, plus the chart's template ──
-VIEW="${DATA}/model"
+VIEW="${MDATA}/model"
 rm -rf "${VIEW}.new" && mkdir -p "${VIEW}.new"
-for f in "${CKPT}"/*; do ln -s "../../checkpoint/${f##*/}" "${VIEW}.new/"; done
+rel="$(realpath --relative-to="${VIEW}" -m "${CKPT}")"
+for f in "${CKPT}"/*; do ln -s "${rel}/${f##*/}" "${VIEW}.new/"; done
 # Never write through a checkpoint's chat-template symlink.
 rm -f "${VIEW}.new/chat_template.jinja"
 cp "${TEMPLATE}" "${VIEW}.new/chat_template.jinja"

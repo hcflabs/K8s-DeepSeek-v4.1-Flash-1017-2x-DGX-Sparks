@@ -26,6 +26,18 @@ weights:
     leader: ""
     worker: ""
 
+ablit:
+  # Upstream's ABLIT=1: drowzeys' Keys overlay (gated: accept its terms at
+  # https://huggingface.co/drowzeys/keys-DeepSeek-V4.1-Flash-1017-Abliterated)
+  # replaces 104 attention tensors (layers 10-35) of the EAQ v1 checkpoint. Fetch
+  # it first with `HF_TOKEN=... scripts/prepare-model.sh --ablit`. The init
+  # container builds data/ablit-<rev8>/ (changed shards, up to another
+  # checkpoint's size, plus its own ~106 GB weight file per node); stock data/
+  # stays, so switching back is a values change. The API model name is unchanged.
+  # Upstream's measurements do not cover this mode.
+  enabled: false
+  revision: 0bdc2036113c4fdda38ef6005b3cbc0bc0dfa0f0   # ABLIT_REVISION (upstream's pin)
+
 prepare:
   # Init container: RoPE tables, image bias, token map, the rank's weight file and
   # the served folder, from the checkpoint (CPU, no network). Skips what is done.

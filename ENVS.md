@@ -41,4 +41,6 @@ Defaults are upstream's unless noted.
 | `HF_CACHE`, `NFS_*`, `WORKER_*_DIR`, `HEAD_*` | `weights.hostPath.leader` / `.worker` | required | one root per node: `checkpoint/`, `engram/`, `kit/`, `data/` |
 | `EAQ_V1_1`, `MODEL_ID`, `MODEL_REVISION` | `scripts/prepare-model.sh --eaq-v1-1` | EAQ v1 | the checkpoint in `checkpoint/` |
 | `VERIFY_SHA` | `scripts/prepare-model.sh --verify-sha` | off | |
-| `ABLIT`, `SPILL_*`, `KV_SHARD*` | not ported (SYNC.md) | off | |
+| `ABLIT` | `ablit.enabled` (+ `scripts/prepare-model.sh --ablit`) | off | `TENSORFOLD_ABLIT`, both ranks and the init container |
+| `ABLIT_REVISION` | `ablit.revision` | `0bdc2036...` | full commit hash; `data/ablit-<rev8>/` |
+| `SPILL_*`, `KV_SHARD*` | not ported (SYNC.md) | off | |

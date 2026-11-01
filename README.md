@@ -55,6 +55,8 @@ SYNC.md, ENVS.md        what was ported and how; every setting's chart value
 ```bash
 # 1. weights, Engram's tables and the kit on both nodes (resumable; hours the first time)
 scripts/prepare-model.sh --models-dir /data/models admin@spark-1 admin@spark-2
+# abliterated: accept https://huggingface.co/drowzeys/keys-DeepSeek-V4.1-Flash-1017-Abliterated,
+# add --ablit with HF_TOKEN set, and install with --set ablit.enabled=true
 
 # 2. the image (no published one upstream): on a Spark with nothing serving
 scripts/build-image.sh --import admin@spark-1 --import admin@spark-2 admin@spark-1
