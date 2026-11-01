@@ -63,6 +63,13 @@ unset TENSORFOLD_API_KEYS
 
 DATA="${ROOT}/data"
 KIT="${ROOT}/kit/kit"
+# ABLIT=1: prepare.sh's overlay checkpoint, with its own weight files and served folder.
+ABLIT="${TENSORFOLD_ABLIT:-0}"
+ABLIT_REVISION="${TENSORFOLD_ABLIT_REVISION:-}"
+MDATA="${DATA}" CKPT="${ROOT}/checkpoint"
+if [[ "${ABLIT}" == 1 ]]; then
+  MDATA="${DATA}/ablit-${ABLIT_REVISION:0:8}" CKPT="${DATA}/ablit-${ABLIT_REVISION:0:8}/checkpoint"
+fi
 
 log() { echo "[tensorfold rank=${RANK}] $(date -u +%T) $*"; }
 die() { log "FATAL: $*"; exit 1; }
@@ -70,19 +77,21 @@ die() { log "FATAL: $*"; exit 1; }
 # ── 1. inputs written by scripts/prepare-model.sh and the prepare init container ──
 [[ "${RANK}" == 0 || "${RANK}" == 1 ]] || die "TENSORFOLD_NODE_RANK is 0 or 1, not ${RANK}"
 [[ -s "${DATA}/dsv41_token_map.json" ]] || die "no token map in ${DATA}: did the prepare init container run?"
-compgen -G "${DATA}/rank-cache/rank${RANK}of2-*.bin" >/dev/null || die "no weight file for rank ${RANK} in ${DATA}/rank-cache"
+[[ "${ABLIT}" == 0 || -f "${CKPT}/.ablit-ready" ]] || die "ABLIT=1 but no overlay checkpoint at ${CKPT}: did the prepare init container run?"
+compgen -G "${MDATA}/rank-cache/rank${RANK}of2-*.bin" >/dev/null || die "no weight file for rank ${RANK} in ${MDATA}/rank-cache"
+log "mode: $([[ "${ABLIT}" == 1 ]] && echo "abliterated (Keys overlay @${ABLIT_REVISION:0:8})" || echo stock)"
 [[ -d "${KIT}/aot" ]] || die "no kit at ${KIT}"
 [[ -n "${RDMA_DEVICES}" || "${RDMA}" == 0 ]] || die "TENSORFOLD_RDMA_DEVICES is empty with RDMA on"
 
 # ── 2. the command ──
 if [[ "${RANK}" == 0 ]]; then
   export TF_TP_WORLD=2 TF_TP_MASTER="${MASTER_ADDR}" TF_TP_PORT="${MASTER_PORT}"
-  export TF_DS_RANK_CACHE="${DATA}/rank-cache" TF_DS_KIT="${KIT}" TENSORFOLD_CUDA_KERNELS="${KIT}/aot"
+  export TF_DS_RANK_CACHE="${MDATA}/rank-cache" TF_DS_KIT="${KIT}" TENSORFOLD_CUDA_KERNELS="${KIT}/aot"
   export TF_DS_ENGRAM="${ROOT}/engram" TF_DS_TOKEN_MAP="${DATA}/dsv41_token_map.json"
   export TF_DS_GRAPHS="${GRAPHS}" TF_DS_GRAPH_CAP="${GRAPH_CAP}" TF_DS_HC_SIDE="${SIDE}"
   export TF_DS_L2_PREFETCH="${PREFETCH}" TF_DS_ENGRAM_AIO="${ENGRAM_AIO}"
   [[ "${RDMA}" == 0 ]] || export TF_RDMA_DEVICES="${RDMA_DEVICES}"
-  CMD=(tensorfold-native serve "${DATA}/model" --backend cuda --host 0.0.0.0 --port "${API_PORT}" --name "${SERVED_NAME}"
+  CMD=(tensorfold-native serve "${MDATA}/model" --backend cuda --host 0.0.0.0 --port "${API_PORT}" --name "${SERVED_NAME}"
        --context "${CONTEXT}" --parallel "${PARALLEL}" --max-tokens "${MAX_TOKENS}"
        --temperature "${TEMPERATURE}" --top-p "${TOP_P}" --top-k "${TOP_K}")
   if [[ "${THINKING}" == 1 ]]; then CMD+=(--thinking); else CMD+=(--no-thinking); fi
@@ -106,7 +115,7 @@ if [[ "${RANK}" == 0 ]]; then
 else
   # rank 1 takes the round's settings as flags only (tf-dsv41-lanes reads no TF_DS_GRAPHS & co.); its pool is rank 0's
   # context (or POOL) and its streams rank 0's: with other values the two ranks wait on each other.
-  CMD=(tf-dsv41-lanes "${ROOT}/checkpoint" "${DATA}/rank-cache" 1 2 "${MASTER_ADDR}" "${MASTER_PORT}" "${KIT}"
+  CMD=(tf-dsv41-lanes "${CKPT}" "${MDATA}/rank-cache" 1 2 "${MASTER_ADDR}" "${MASTER_PORT}" "${KIT}"
        --engram "${ROOT}/engram" --token-map "${DATA}/dsv41_token_map.json"
        --pool "${POOL:-${CONTEXT}}" --streams "${PARALLEL}" --drafts "${DRAFTS}" --graphs "${GRAPHS}"
        --side "${SIDE}" --prefetch "${PREFETCH}" --aio "${ENGRAM_AIO}")

@@ -52,7 +52,13 @@ Differences, on purpose:
   `topology.fabric.rdmaDevice` and `gidIndex` as given. Upstream's
   `probe_rails` (drop a twin rail that cannot reach the peer) has no
   counterpart; the Ansible playbook checks the link.
-- **Not ported:** `ABLIT=1` (the Keys overlay), spill v2 and KV sharding (off by
+- **`ABLIT=1`** is `ablit.enabled` (pin `ablit.revision`). `prepare-model.sh
+  --ablit` fetches the gated overlay on each node (no token reaches the cluster);
+  the init container applies it and runs `ablit_stock_dtypes.py` (copied as is
+  to `chart/files/`) into `data/ablit-<rev8>/`, which has its own `rank-cache/`
+  and `model/`. Upstream's running-mode check in `start.sh` is the serve log's
+  `mode:` line. Upstream's measurements do not cover this mode.
+- **Not ported:** spill v2 and KV sharding (off by
   default upstream; they need per-node spill directories and identity checks),
   `HEAD_NFS_*`, log rotation (Kubernetes rotates container logs), the systemd
   unit. `engine.env` and `serving.extraArgs` pass raw `TF_DS_*` settings and

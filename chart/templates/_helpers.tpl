@@ -69,6 +69,7 @@ app.kubernetes.io/component: {{ .component }}
 {{- with $s.reasoningEffort }}{{ if not (has . (list "low" "medium" "high" "xhigh")) }}{{ fail (printf "serving.reasoningEffort is low, medium, high, xhigh or empty, not %s" .) }}{{ end }}{{ end }}
 {{- $pim := int $s.prefillInterleaveMs -}}
 {{- if or (lt $pim 0) (gt $pim 5000) }}{{ fail "serving.prefillInterleaveMs is 0 to 5000" }}{{ end }}
+{{- if and .Values.ablit.enabled (not (regexMatch "^[0-9a-f]{40}$" (toString .Values.ablit.revision))) }}{{ fail "ablit.revision must be a full 40-character commit hash" }}{{ end }}
 {{- if not (has (toString .Values.engine.rank1Profile) (list "0" "1" "2")) }}{{ fail "engine.rank1Profile is 0, 1 or 2" }}{{ end }}
 {{- end -}}
 
@@ -81,6 +82,8 @@ app.kubernetes.io/component: {{ .component }}
 {{- $gid := required "topology.fabric.gidIndex is required (the RoCE v2 IPv4 GID index)" (include "dsv41.optional" $f.gidIndex) -}}
 - {name: TENSORFOLD_NODE_RANK, value: {{ .rank | quote }}}
 - {name: TENSORFOLD_ROOT, value: "/models"}
+- {name: TENSORFOLD_ABLIT, value: {{ include "dsv41.bool" $v.ablit.enabled | quote }}}
+- {name: TENSORFOLD_ABLIT_REVISION, value: {{ $v.ablit.revision | quote }}}
 - {name: TENSORFOLD_MASTER_ADDR, value: {{ required "topology.fabric.masterAddr is required" $f.masterAddr | quote }}}
 - {name: TENSORFOLD_MASTER_PORT, value: {{ $f.port | quote }}}
 - {name: TENSORFOLD_API_PORT, value: {{ $v.service.port | quote }}}
@@ -185,6 +188,8 @@ initContainers:
       - {name: TENSORFOLD_CHAT_TEMPLATE, value: "/etc/tensorfold/chat_template.jinja"}
       - {name: TENSORFOLD_VERIFY_KIT, value: {{ include "dsv41.bool" $v.prepare.verifyKit | quote }}}
       - {name: TENSORFOLD_MIN_FREE_GIB, value: {{ $v.prepare.minFreeGiB | quote }}}
+      - {name: TENSORFOLD_ABLIT, value: {{ include "dsv41.bool" $v.ablit.enabled | quote }}}
+      - {name: TENSORFOLD_ABLIT_REVISION, value: {{ $v.ablit.revision | quote }}}
       - {name: HOME, value: /tmp}
     {{- with $v.prepare.resources }}
     resources:

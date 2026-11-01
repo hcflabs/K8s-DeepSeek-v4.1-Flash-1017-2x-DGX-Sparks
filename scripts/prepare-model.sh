@@ -10,6 +10,8 @@
 #                deepseek-ai/DeepSeek-V4.1-Flash-1017, its index and config
 #                (~203 GB, pinned revision, sizes checked against the model card)
 #   kit/         BertholomusAI's kernel kit (git, pinned commit)
+#   ablit/<rev>/ with --ablit: drowzeys' gated Keys overlay for EAQ v1 (~651 MiB,
+#                pinned revision); the chart's ablit.enabled applies it
 #
 # The derived files (RoPE tables, the image routing bias, Engram's token map,
 # the rank's ~106 GB weight file and the served folder) are written into data/
@@ -22,11 +24,14 @@
 #   --models-dir DIR   weights root on each node (REQUIRED, e.g. /node/models)
 #   --name NAME        directory under DIR (default: DeepSeek-V4.1-Flash-1017)
 #   --eaq-v1-1         the experimental EAQ v1.1 pack instead of v1 (recommended)
+#   --ablit            also fetch the Keys overlay (needs HF_TOKEN from an account
+#                      that accepted the terms of drowzeys/keys-DeepSeek-V4.1-Flash-1017-Abliterated;
+#                      EAQ v1 only, so not with --eaq-v1-1)
 #   --verify-sha       also sha256 Engram's two shards (minutes of reading 203 GB)
 #   --dry-run          print what would run on each host and stop
 #   -h, --help
 #
-# Env: HF_TOKEN (optional; sent to the host over stdin, never on a command line).
+# Env: HF_TOKEN (required with --ablit, else optional; sent to the host over stdin, never on a command line).
 #
 # Resumable: re-running continues a partial download and skips finished parts.
 # The chart's weights.hostPath.* must point at <models-dir>/<name>.
@@ -35,6 +40,7 @@ set -euo pipefail
 MODELS_DIR=""
 NAME="DeepSeek-V4.1-Flash-1017"
 EAQ_V1_1=0
+ABLIT=0
 VERIFY_SHA=0
 DRY=0
 HOSTS=()
@@ -52,6 +58,9 @@ ENGRAM_47_SIZE=101535150936
 ENGRAM_48_SIZE=101537926640
 ENGRAM_47_SHA=76a05106ece259be83d1bfea0dcb54f23377864ee60fd321690f35e6698a2af5
 ENGRAM_48_SHA=9dc51433e195bc78b5ad846b68643cc0351d3b174e5e4309222d3b7402c83afd
+ABLIT_ID="drowzeys/keys-DeepSeek-V4.1-Flash-1017-Abliterated"
+ABLIT_REV="0bdc2036113c4fdda38ef6005b3cbc0bc0dfa0f0"
+ABLIT_SIDECAR="exl3_wo_b_l10_35_mia29.safetensors"
 KIT_REPO="https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp2-2xgb10.git"
 KIT_REF="abe07c7d509a0199cc7fec15263be2aa52ac652f"
 
@@ -62,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --models-dir) MODELS_DIR="${2:?}"; shift 2 ;;
     --name) NAME="${2:?}"; shift 2 ;;
     --eaq-v1-1) EAQ_V1_1=1; shift ;;
+    --ablit) ABLIT=1; shift ;;
     --verify-sha) VERIFY_SHA=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -74,6 +84,10 @@ done
 [[ ${#HOSTS[@]} -ge 1 ]] || { echo "error: give at least one user@host (normally both Sparks)" >&2; usage >&2; exit 2; }
 [[ "${NAME}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "error: --name is one directory name" >&2; exit 2; }
 
+if [[ "${ABLIT}" -eq 1 ]]; then
+  [[ "${EAQ_V1_1}" -eq 0 ]] || { echo "error: --ablit's overlay matches EAQ v1 only; drop --eaq-v1-1" >&2; exit 2; }
+  [[ -n "${HF_TOKEN:-}" || "${DRY}" -eq 1 ]] || { echo "error: --ablit needs HF_TOKEN (the overlay is gated: https://huggingface.co/${ABLIT_ID})" >&2; exit 2; }
+fi
 if [[ "${EAQ_V1_1}" -eq 1 ]]; then MODEL="${MODEL_V11}"; MODEL_REV="${MODEL_V11_REV}"
 else MODEL="${MODEL_V1}"; MODEL_REV="${MODEL_V1_REV}"; fi
 ROOT="${MODELS_DIR%/}/${NAME}"
@@ -82,6 +96,7 @@ echo "root:        ${ROOT}   (chart: weights.hostPath.leader / .worker)"
 echo "checkpoint:  ${MODEL} @${MODEL_REV:0:12} -> ${ROOT}/checkpoint"
 echo "engram:      ${ENGRAM_ID} @${ENGRAM_REV:0:12} (${ENGRAM_47}, ${ENGRAM_48}) -> ${ROOT}/engram"
 echo "kit:         ${KIT_REPO} @${KIT_REF:0:12} -> ${ROOT}/kit"
+[[ "${ABLIT}" -eq 0 ]] || echo "ablit:       ${ABLIT_ID} @${ABLIT_REV:0:12} -> ${ROOT}/ablit/${ABLIT_REV}"
 
 remote_script() {
   cat <<REMOTE
@@ -141,6 +156,18 @@ fi
 test -f "\$K/kit/MANIFEST" || { echo "[\$H] \$K/kit/MANIFEST missing" >&2; exit 1; }
 # The init container writes the RoPE tables and the image bias into kit/kit as root.
 sudo chown -R "\$(id -u):\$(id -g)" "\$K"
+
+if [ '${ABLIT}' = 1 ]; then
+  A='${ROOT}/ablit/${ABLIT_REV}'
+  echo "[\$H] ablit: ${ABLIT_ID} @${ABLIT_REV:0:8} (gated)"
+  mkdir -p "\$A"
+  "\$HF" download '${ABLIT_ID}' --revision '${ABLIT_REV}' --local-dir "\$A" \
+    --include apply_mia29_wo_b_graft.py --include '${ABLIT_SIDECAR}' --include EXL3_MIA29_ABLIT_META.json --include README.md >/dev/null ||
+    { echo "[\$H] cannot download the gated overlay: does HF_TOKEN's account have access at https://huggingface.co/${ABLIT_ID}?" >&2; exit 1; }
+  for f in apply_mia29_wo_b_graft.py '${ABLIT_SIDECAR}' EXL3_MIA29_ABLIT_META.json; do
+    test -s "\$A/\$f" || { echo "[\$H] overlay file \$f missing" >&2; exit 1; }
+  done
+fi
 
 printf '%s\n' '${MODEL}@${MODEL_REV}' > '${ROOT}/checkpoint.ref'
 echo "[\$H] done: \$(du -shL '${ROOT}' | cut -f1) in ${ROOT}"

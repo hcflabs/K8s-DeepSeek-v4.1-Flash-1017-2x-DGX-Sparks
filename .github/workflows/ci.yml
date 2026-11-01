@@ -20,6 +20,7 @@ jobs:
           helm template ci chart "${V[@]}" --set 'ingress.hosts[0]=llm.example.com' > /dev/null
           helm template ci chart "${V[@]}" --set auth.apiKey=test > /dev/null
           helm template ci chart "${V[@]}" --set prepare.enabled=false > /dev/null
+          helm template ci chart "${V[@]}" --set ablit.enabled=true > /dev/null
           if helm template ci chart > /dev/null 2>&1; then echo "chart must require site values"; exit 1; fi
           refuse() { if helm template ci chart "${V[@]}" "$@" > /dev/null 2>&1; then echo "must refuse: $*"; exit 1; fi; }
           refuse --set serving.context=2000000
@@ -28,6 +29,7 @@ jobs:
           refuse --set serving.roundRows=24
           refuse --set serving.reasoningEffort=max
           refuse --set topology.fabric.gidIndex=null
+          refuse --set ablit.enabled=true --set ablit.revision=0bdc2036
       - name: rank env matches upstream start.sh
         run: |
           set -euo pipefail
